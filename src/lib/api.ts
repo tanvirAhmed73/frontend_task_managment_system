@@ -15,6 +15,9 @@ import type {
   ListTasksQuery,
   ChangePasswordBody,
   LoginResponse,
+  NotificationsListQuery,
+  NotificationsListResponse,
+  NotificationItemView,
   TaskCommentView,
   TaskView,
   UpdateTaskBody,
@@ -115,6 +118,82 @@ function parseAuditLogListResponse(raw: unknown): AuditLogListResponse {
     total,
     page,
     limit,
+  };
+}
+
+function parseNotificationType(raw: unknown): NotificationItemView["type"] {
+  if (
+    raw === "TASK_ASSIGNED" ||
+    raw === "TASK_COMPLETED" ||
+    raw === "TASK_COMMENT_ADDED"
+  ) {
+    return raw;
+  }
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
+  return "TASK_ASSIGNED";
+}
+
+function parseNotificationItem(raw: unknown): NotificationItemView | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id : "";
+  const created_at =
+    typeof o.created_at === "string"
+      ? o.created_at
+      : typeof o.createdAt === "string"
+        ? o.createdAt
+        : "";
+  const readRaw = o.read_at ?? o.readAt;
+  const read_at =
+    readRaw === null || typeof readRaw === "string" ? readRaw : null;
+  const type = parseNotificationType(o.type);
+  const title = typeof o.title === "string" ? o.title : "";
+  const message = typeof o.message === "string" ? o.message : "";
+  const data =
+    o.data && typeof o.data === "object" ? (o.data as Record<string, unknown>) : {};
+  if (!id || !created_at) {
+    return null;
+  }
+  return {
+    id,
+    created_at,
+    read_at,
+    type,
+    title: title || "Notification",
+    message: message || title || "—",
+    data,
+  };
+}
+
+function parseNotificationsList(raw: unknown): NotificationsListResponse {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Unexpected notifications response");
+  }
+  const root = raw as Record<string, unknown>;
+  const o =
+    root.items !== undefined
+      ? root
+      : root.data && typeof root.data === "object"
+        ? (root.data as Record<string, unknown>)
+        : root;
+  const itemsRaw = o.items;
+  if (!Array.isArray(itemsRaw)) {
+    throw new Error("Unexpected notifications response");
+  }
+  const items: NotificationItemView[] = [];
+  for (const x of itemsRaw) {
+    const row = parseNotificationItem(x);
+    if (row) items.push(row);
+  }
+  return {
+    items,
+    total: typeof o.total === "number" ? o.total : items.length,
+    page: typeof o.page === "number" ? o.page : 1,
+    limit: typeof o.limit === "number" ? o.limit : 20,
   };
 }
 
@@ -426,4 +505,62 @@ export async function listAuditLogsRequest(
     throw new Error(await parseApiErrorMessage(res));
   }
   return parseAuditLogListResponse(await res.json());
+}
+
+export async function listNotificationsRequest(
+  token: string,
+  query?: NotificationsListQuery
+): Promise<NotificationsListResponse> {
+  const params = new URLSearchParams();
+  if (query?.page && Number.isFinite(query.page)) {
+    params.set("page", String(Math.max(1, Math.floor(query.page))));
+  }
+  if (query?.limit && Number.isFinite(query.limit)) {
+    const normalized = Math.max(1, Math.min(100, Math.floor(query.limit)));
+    params.set("limit", String(normalized));
+  }
+  if (typeof query?.unreadOnly === "boolean") {
+    params.set("unreadOnly", String(query.unreadOnly));
+  }
+  const qs = params.toString();
+  const path = qs ? `/notifications?${qs}` : "/notifications";
+  const res = await apiFetch(path, { method: "GET", token });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseNotificationsList(await res.json());
+}
+
+export async function markNotificationReadRequest(
+  token: string,
+  id: string
+): Promise<void> {
+  const res = await apiFetch(`/notifications/${encodeURIComponent(id)}/read`, {
+    method: "PATCH",
+    token,
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+}
+
+export async function markAllNotificationsReadRequest(
+  token: string
+): Promise<{ updated: number }> {
+  const res = await apiFetch("/notifications/read-all", {
+    method: "PATCH",
+    token,
+  });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  const raw: unknown = await res.json();
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    typeof (raw as { updated?: unknown }).updated !== "number"
+  ) {
+    return { updated: 0 };
+  }
+  return { updated: (raw as { updated: number }).updated };
 }

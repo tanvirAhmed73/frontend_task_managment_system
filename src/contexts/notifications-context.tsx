@@ -11,8 +11,14 @@ import {
 } from "react";
 import { io, type Socket } from "socket.io-client";
 import { useAuth } from "@/contexts/auth-context";
+import {
+  listNotificationsRequest,
+  markAllNotificationsReadRequest,
+  markNotificationReadRequest,
+} from "@/lib/api";
 import { getSocketOrigin } from "@/lib/socket-origin";
 import type {
+  NotificationItemView,
   TaskAssignedNotificationPayload,
   TaskCommentNotificationPayload,
   TaskCompletedNotificationPayload,
@@ -29,10 +35,12 @@ export type StoredNotification = {
   id: string;
   kind: NotificationKind;
   message: string;
+  title?: string;
   taskTitle?: string;
   taskId?: string;
   receivedAt: number;
   seen: boolean;
+  persisted?: boolean;
 };
 
 type ToastItem = {
@@ -114,6 +122,20 @@ function commentFromNotificationPayload(
     updated_at: c.created_at,
     author: c.author,
   };
+}
+
+function kindFromNotificationType(type: NotificationItemView["type"]): NotificationKind {
+  if (type === "TASK_COMPLETED") return "completed";
+  if (type === "TASK_COMMENT_ADDED") return "comment";
+  if (type === "TASK_ASSIGNED") return "assigned";
+  if (typeof type === "string" && type.includes("COMMENT")) return "comment";
+  if (typeof type === "string" && type.includes("COMPLET")) return "completed";
+  return "assigned";
+}
+
+function dateToMs(iso: string): number {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : Date.now();
 }
 
 type NotificationsContextValue = {
@@ -215,10 +237,12 @@ export function NotificationsProvider({
             id: nid,
             kind: "assigned" as const,
             message,
+            title: "Task assignment",
             taskTitle,
             taskId,
             receivedAt: Date.now(),
             seen: false,
+            persisted: false,
           },
           ...prev,
         ].slice(0, MAX_STORED)
@@ -241,10 +265,12 @@ export function NotificationsProvider({
             id: nid,
             kind: "completed" as const,
             message,
+            title: "Task completed",
             taskTitle,
             taskId,
             receivedAt: Date.now(),
             seen: false,
+            persisted: false,
           },
           ...prev,
         ].slice(0, MAX_STORED)
@@ -272,10 +298,12 @@ export function NotificationsProvider({
             id: nid,
             kind: "comment" as const,
             message,
+            title: "Task comment",
             taskTitle,
             taskId,
             receivedAt: Date.now(),
             seen: false,
+            persisted: false,
           },
           ...prev,
         ].slice(0, MAX_STORED)
@@ -292,15 +320,34 @@ export function NotificationsProvider({
 
   const markNotificationsSeen = useCallback(() => {
     setStored((prev) => prev.map((n) => ({ ...n, seen: true })));
-  }, []);
+    if (!token) return;
+    void markAllNotificationsReadRequest(token).catch(() => {
+      /* keep optimistic state */
+    });
+  }, [token]);
 
   const clearNotifications = useCallback(() => {
     setStored([]);
-  }, []);
+    if (!token) return;
+    void markAllNotificationsReadRequest(token).catch(() => {
+      /* keep local clear even if request fails */
+    });
+  }, [token]);
 
   const dismissNotification = useCallback((id: string) => {
-    setStored((prev) => prev.filter((n) => n.id !== id));
-  }, []);
+    let shouldMarkRead = false;
+    setStored((prev) =>
+      prev.filter((n) => {
+        if (n.id !== id) return true;
+        shouldMarkRead = Boolean(n.persisted);
+        return false;
+      })
+    );
+    if (!token || !shouldMarkRead) return;
+    void markNotificationReadRequest(token, id).catch(() => {
+      /* keep local dismiss even if request fails */
+    });
+  }, [token]);
 
   const unreadCount = useMemo(
     () => stored.filter((n) => !n.seen).length,
@@ -326,9 +373,78 @@ export function NotificationsProvider({
         clearToastTimers();
         setAssignmentEpoch(0);
         setTaskCompletedEpoch(0);
+        setTaskCommentEpoch(0);
+        commentEventsRef.current = [];
       });
     }
   }, [loading, token, clearToastTimers]);
+
+  useEffect(() => {
+    if (loading || !token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await listNotificationsRequest(token, {
+          page: 1,
+          limit: MAX_STORED,
+          unreadOnly: false,
+        });
+        if (cancelled) return;
+        const persisted: StoredNotification[] = res.items.map((item) => {
+          const data = item.data;
+          const taskObj =
+            data.task && typeof data.task === "object"
+              ? (data.task as Record<string, unknown>)
+              : null;
+          const taskTitle =
+            typeof data.taskTitle === "string"
+              ? data.taskTitle
+              : typeof data.task_title === "string"
+                ? data.task_title
+                : taskObj && typeof taskObj.title === "string"
+                  ? taskObj.title
+                  : undefined;
+          const taskId =
+            typeof data.taskId === "string"
+              ? data.taskId
+              : typeof data.task_id === "string"
+                ? data.task_id
+                : taskObj && typeof taskObj.id === "string"
+                  ? taskObj.id
+                  : undefined;
+          return {
+            id: item.id,
+            kind: kindFromNotificationType(item.type),
+            message: item.message,
+            title: item.title,
+            taskTitle,
+            taskId,
+            receivedAt: dateToMs(item.created_at),
+            seen: item.read_at !== null,
+            persisted: true,
+          };
+        });
+        setStored((prev) => {
+          const incomingIds = new Set(persisted.map((n) => n.id));
+          const realtimeOnly = prev.filter((n) => !incomingIds.has(n.id));
+          return [...realtimeOnly, ...persisted]
+            .sort((a, b) => b.receivedAt - a.receivedAt)
+            .slice(0, MAX_STORED);
+        });
+      } catch (e) {
+        if (process.env.NODE_ENV === "development") {
+          console.warn(
+            "[notifications] GET /notifications failed; list stays empty until this succeeds:",
+            e instanceof Error ? e.message : e
+          );
+        }
+        /* keep realtime notifications only on failure */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, token]);
 
   useEffect(() => {
     if (loading || !token) {
@@ -395,7 +511,14 @@ export function NotificationsProvider({
       socket.disconnect();
       setSocketConnected(false);
     };
-  }, [loading, token, user?.role, recordIncoming, recordTaskCompleted]);
+  }, [
+    loading,
+    token,
+    user?.role,
+    recordIncoming,
+    recordTaskCompleted,
+    recordTaskComment,
+  ]);
 
   const value = useMemo(
     () => ({

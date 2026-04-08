@@ -1,5 +1,22 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Docker
+
+This repository is the **frontend** only. `docker compose up` builds and runs the Next.js app on port **3000** (override with `WEB_PORT`).
+
+1. Start your API on the host (default assumed: `http://localhost:4000`).
+2. From the repo root:
+
+```bash
+docker compose up --build
+```
+
+3. Open [http://localhost:3000](http://localhost:3000).
+
+The compose file defaults `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_ORIGIN` to `host.docker.internal:4000` so the container can reach a backend running on your machine. To customize, copy `docker.env.example` to `.env` and adjust, then run `docker compose up --build` again so client env vars are rebaked.
+
+If you add the backend to the same Compose project later, point those URLs at the API service name (for example `http://api:4000/api`).
+
 ## Getting Started
 
 First, run the development server:

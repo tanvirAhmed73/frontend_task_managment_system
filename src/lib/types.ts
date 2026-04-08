@@ -129,6 +129,35 @@ export type CreateTaskCommentBody = {
   body: string;
 };
 
+export type NotificationType =
+  | "TASK_ASSIGNED"
+  | "TASK_COMPLETED"
+  | "TASK_COMMENT_ADDED";
+
+export type NotificationItemView = {
+  id: string;
+  created_at: string;
+  read_at: string | null;
+  /** Known enum from API; unknown strings still map to a bell “kind” in the UI. */
+  type: NotificationType | string;
+  title: string;
+  message: string;
+  data: Record<string, unknown>;
+};
+
+export type NotificationsListQuery = {
+  page?: number;
+  limit?: number;
+  unreadOnly?: boolean;
+};
+
+export type NotificationsListResponse = {
+  items: NotificationItemView[];
+  total: number;
+  page: number;
+  limit: number;
+};
+
 export type AuditAction =
   | "TASK_CREATED"
   | "TASK_UPDATED"
