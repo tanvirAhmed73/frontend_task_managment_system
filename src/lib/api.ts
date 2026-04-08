@@ -1,9 +1,122 @@
+import { parseTaskComment, parseTaskCommentList } from "./comment-utils";
+import { parseTaskList, parseTaskView } from "./task-utils";
 import type {
+  AuditLogActor,
+  AuditLogListQuery,
+  AuditLogListResponse,
+  AuditLogView,
   AdminHealthResponse,
+  AuthUserRole,
   AuthUserView,
+  CreateTaskBody,
+  CreateTaskCommentBody,
   CreateUserBody,
+  ListedUserView,
+  ListTasksQuery,
+  ChangePasswordBody,
   LoginResponse,
+  TaskCommentView,
+  TaskView,
+  UpdateTaskBody,
 } from "./types";
+
+/** Thrown when GET /tasks/:id/comments returns 403. */
+export class ForbiddenCommentsError extends Error {
+  readonly code = "FORBIDDEN_COMMENTS" as const;
+  constructor() {
+    super("FORBIDDEN_COMMENTS");
+    this.name = "ForbiddenCommentsError";
+  }
+}
+
+export function isForbiddenCommentsError(e: unknown): e is ForbiddenCommentsError {
+  return e instanceof ForbiddenCommentsError;
+}
+
+function parseAuditActor(raw: unknown): AuditLogActor {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid audit actor");
+  }
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id : "";
+  const email = typeof o.email === "string" ? o.email : "";
+  const name = o.name === null || typeof o.name === "string" ? o.name : null;
+  const role = o.role;
+  if (!id || !email || (role !== "ADMIN" && role !== "USER")) {
+    throw new Error("Invalid audit actor");
+  }
+  return { id, email, name, role: role as AuthUserRole };
+}
+
+function parseAuditLogView(raw: unknown): AuditLogView {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid audit log row");
+  }
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id : "";
+  const createdAt =
+    typeof o.created_at === "string"
+      ? o.created_at
+      : typeof o.createdAt === "string"
+        ? o.createdAt
+        : "";
+  const action = typeof o.action === "string" ? o.action : "";
+  const entityType =
+    typeof o.entity_type === "string"
+      ? o.entity_type
+      : typeof o.entityType === "string"
+        ? o.entityType
+        : "";
+  const entityId =
+    typeof o.entity_id === "string"
+      ? o.entity_id
+      : typeof o.entityId === "string"
+        ? o.entityId
+        : "";
+  const taskIdRaw = o.task_id ?? o.taskId;
+  const taskId =
+    taskIdRaw === null || typeof taskIdRaw === "string" ? taskIdRaw : null;
+  const actor = parseAuditActor(o.actor);
+  const payload =
+    o.payload && typeof o.payload === "object"
+      ? (o.payload as Record<string, unknown>)
+      : {};
+
+  if (!id || !createdAt || !action || !entityType || !entityId) {
+    throw new Error("Invalid audit log row");
+  }
+
+  return {
+    id,
+    created_at: createdAt,
+    action,
+    entity_type: entityType,
+    entity_id: entityId,
+    task_id: taskId,
+    actor,
+    payload,
+  };
+}
+
+function parseAuditLogListResponse(raw: unknown): AuditLogListResponse {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Unexpected audit logs response");
+  }
+  const o = raw as Record<string, unknown>;
+  const itemsRaw = o.items;
+  const total = typeof o.total === "number" ? o.total : 0;
+  const page = typeof o.page === "number" ? o.page : 1;
+  const limit = typeof o.limit === "number" ? o.limit : 50;
+  if (!Array.isArray(itemsRaw)) {
+    throw new Error("Unexpected audit logs response");
+  }
+  return {
+    items: itemsRaw.map((x) => parseAuditLogView(x)),
+    total,
+    page,
+    limit,
+  };
+}
 
 function getBaseUrl(): string {
   const raw = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -96,6 +209,21 @@ export async function meRequest(token: string): Promise<AuthUserView> {
   return res.json() as Promise<AuthUserView>;
 }
 
+export async function changePasswordRequest(
+  token: string,
+  body: ChangePasswordBody
+): Promise<void> {
+  const res = await apiFetch("/auth/password", {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  /* 204 No Content */
+}
+
 export async function adminHealthRequest(
   token: string
 ): Promise<AdminHealthResponse> {
@@ -119,4 +247,183 @@ export async function createUserRequest(
     throw new Error(await parseApiErrorMessage(res));
   }
   return res.json() as Promise<AuthUserView>;
+}
+
+function parseListedUser(raw: unknown): ListedUserView {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid user in list");
+  }
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id : "";
+  const email = typeof o.email === "string" ? o.email : "";
+  const name =
+    o.name === null || typeof o.name === "string" ? o.name : null;
+  const role = o.role;
+  if (role !== "ADMIN" && role !== "USER") {
+    throw new Error("Invalid user role in list");
+  }
+  if (!id || !email) {
+    throw new Error("Invalid user in list");
+  }
+  return { id, email, name, role: role as AuthUserRole };
+}
+
+function parseListedUsersJson(raw: unknown): ListedUserView[] {
+  const arr = Array.isArray(raw)
+    ? raw
+    : raw &&
+        typeof raw === "object" &&
+        Array.isArray((raw as { data?: unknown }).data)
+      ? (raw as { data: unknown[] }).data
+      : null;
+  if (!arr) {
+    throw new Error("Unexpected users list response");
+  }
+  return arr.map((item) => parseListedUser(item));
+}
+
+/** GET /api/users — admin only; active users, server-ordered. */
+export async function listUsersRequest(
+  token: string
+): Promise<ListedUserView[]> {
+  const res = await apiFetch("/users", { method: "GET", token });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  const json: unknown = await res.json();
+  return parseListedUsersJson(json);
+}
+
+export async function listTasksRequest(
+  token: string,
+  query?: ListTasksQuery
+): Promise<TaskView[]> {
+  const params = new URLSearchParams();
+  if (query?.status) params.set("status", query.status);
+  if (query?.assignee_id) params.set("assignee_id", query.assignee_id);
+  const qs = params.toString();
+  const path = qs ? `/tasks?${qs}` : "/tasks";
+  const res = await apiFetch(path, { method: "GET", token });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  const json: unknown = await res.json();
+  return parseTaskList(json);
+}
+
+export async function getTaskRequest(
+  token: string,
+  id: string
+): Promise<TaskView> {
+  const res = await apiFetch(`/tasks/${encodeURIComponent(id)}`, {
+    method: "GET",
+    token,
+  });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseTaskView(await res.json());
+}
+
+export async function createTaskRequest(
+  token: string,
+  body: CreateTaskBody
+): Promise<TaskView> {
+  const res = await apiFetch("/tasks", {
+    method: "POST",
+    token,
+    body: JSON.stringify(body),
+  });
+  /* 201 Created + Task body */
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseTaskView(await res.json());
+}
+
+export async function updateTaskRequest(
+  token: string,
+  id: string,
+  body: UpdateTaskBody
+): Promise<TaskView> {
+  const res = await apiFetch(`/tasks/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseTaskView(await res.json());
+}
+
+export async function deleteTaskRequest(
+  token: string,
+  id: string
+): Promise<void> {
+  const res = await apiFetch(`/tasks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    token,
+  });
+  /* 204 No Content — no JSON body */
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+}
+
+export async function listTaskCommentsRequest(
+  token: string,
+  taskId: string
+): Promise<TaskCommentView[]> {
+  const res = await apiFetch(
+    `/tasks/${encodeURIComponent(taskId)}/comments`,
+    { method: "GET", token }
+  );
+  if (res.status === 403) {
+    throw new ForbiddenCommentsError();
+  }
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseTaskCommentList(await res.json());
+}
+
+export async function createTaskCommentRequest(
+  token: string,
+  taskId: string,
+  body: CreateTaskCommentBody
+): Promise<TaskCommentView> {
+  const res = await apiFetch(
+    `/tasks/${encodeURIComponent(taskId)}/comments`,
+    {
+      method: "POST",
+      token,
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseTaskComment(await res.json());
+}
+
+export async function listAuditLogsRequest(
+  token: string,
+  query?: AuditLogListQuery
+): Promise<AuditLogListResponse> {
+  const params = new URLSearchParams();
+  if (query?.page && Number.isFinite(query.page)) {
+    params.set("page", String(Math.max(1, Math.floor(query.page))));
+  }
+  if (query?.limit && Number.isFinite(query.limit)) {
+    const normalized = Math.max(1, Math.min(100, Math.floor(query.limit)));
+    params.set("limit", String(normalized));
+  }
+  const qs = params.toString();
+  const path = qs ? `/audit-logs?${qs}` : "/audit-logs";
+  const res = await apiFetch(path, { method: "GET", token });
+  if (!res.ok) {
+    throw new Error(await parseApiErrorMessage(res));
+  }
+  return parseAuditLogListResponse(await res.json());
 }

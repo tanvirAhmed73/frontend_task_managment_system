@@ -45,7 +45,7 @@ export default function AdminCreateUserPage() {
   }
 
   return (
-    <div className="mx-auto max-w-lg rounded-lg border border-slate-200 bg-white p-8 shadow-sm">
+    <div className="mx-auto w-full max-w-lg rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
       <h2 className="mb-2 text-lg font-semibold text-slate-900">
         Create user
       </h2>
@@ -54,7 +54,8 @@ export default function AdminCreateUserPage() {
         <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">
           POST /api/users
         </code>
-        . Password must be at least 8 characters.
+        . Password must be at least 8 characters. When the server has SMTP
+        configured, the new user may receive a welcome email with login details.
       </p>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <div>

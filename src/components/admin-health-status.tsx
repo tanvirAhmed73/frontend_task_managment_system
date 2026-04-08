@@ -33,7 +33,7 @@ export function AdminHealthStatus() {
 
   return (
     <p
-      className={`mb-4 rounded-md border px-3 py-2 text-xs ${
+      className={`mb-4 break-words rounded-md border px-3 py-2 text-xs ${
         message.includes("OK")
           ? "border-emerald-200 bg-emerald-50 text-emerald-800"
           : "border-amber-200 bg-amber-50 text-amber-900"

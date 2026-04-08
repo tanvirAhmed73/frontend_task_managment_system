@@ -1,12 +1,15 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 
-export default function LoginPage() {
+function LoginForm() {
   const { login, user, loading } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const passwordUpdated = searchParams.get("passwordUpdated") === "1";
+
   const [email, setEmail] = useState("admin@local.dev");
   const [password, setPassword] = useState("ChangeMeAdmin123!");
   const [error, setError] = useState<string | null>(null);
@@ -34,18 +37,26 @@ export default function LoginPage() {
 
   if (loading || user) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-100">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-slate-100">
         <p className="text-sm text-slate-600">Loading…</p>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
-      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-8 shadow-sm">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-slate-100 px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <h1 className="mb-6 text-center text-2xl font-semibold text-slate-900">
           Login
         </h1>
+        {passwordUpdated ? (
+          <p
+            className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+            role="status"
+          >
+            Password updated. Sign in with your new password.
+          </p>
+        ) : null}
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div>
             <label
@@ -96,5 +107,19 @@ export default function LoginPage() {
         </form>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[100dvh] items-center justify-center bg-slate-100">
+          <p className="text-sm text-slate-600">Loading…</p>
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }
